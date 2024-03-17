@@ -9,15 +9,17 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	api "github.com/hashicorp/consul/api"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 )
 
 var (
-	ctx    = context.Background()
-	db     *sql.DB
-	client *redis.Client
+	ctx          = context.Background()
+	db           *sql.DB
+	client       *redis.Client
+	consulClient *api.Client
 )
 
 func main() {
@@ -30,6 +32,17 @@ func main() {
 	}
 
 	DBAndRedisInit()
+
+	// 初始化 Consul 客戶端
+	config := api.DefaultConfig()
+	config.Address = NewConsulConnectAddress()
+	temp, err := api.NewClient(config)
+	if err != nil {
+		sugarLogger.Info("Failed to create Consul client: %v", err)
+	} else {
+		consulClient = temp
+	}
+
 	// 初始化 Gin 路由
 	gin.SetMode(gin.DebugMode)
 	r := gin.Default()
@@ -39,6 +52,13 @@ func main() {
 			"status": "ok",
 		})
 	}))
+
+	// GET 方法用于檢查 Consul 連線
+	r.GET("/check-consul", checkConsulConnection)
+	// GET 方法用于从 Consul 获取指定键的值
+	r.GET("/consul-kv", getConsulValueHandler)
+	// PUT 方法用于将指定值设置到 Consul 的指定键
+	r.PUT("/consul-kv", putConsulValueHandler)
 
 	r.GET("/healthcheck", HealthCheckHandler(db, client))
 
@@ -59,6 +79,78 @@ func main() {
 	}
 }
 
+// Consul 的邏輯區塊
+
+func checkConsulConnection(c *gin.Context) {
+	if consulClient == nil {
+		c.JSON(500, gin.H{
+			"status": "error",
+			"error":  "Consul client is not initialized",
+		})
+	} else {
+		c.JSON(200, gin.H{
+			"status": "ok",
+		})
+	}
+}
+
+// 处理获取 Consul 键值对的请求
+func getConsulValueHandler(c *gin.Context) {
+	key := c.Query("key")
+	if key == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Key query parameter is required"})
+		return
+	}
+
+	value, err := getConsulValue(key)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to retrieve key from Consul: %s", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"key": key, "value": value})
+}
+
+// 处理设置 Consul 键值对的请求
+func putConsulValueHandler(c *gin.Context) {
+	key := c.Query("key")
+	value := c.Query("value")
+	if key == "" || value == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Both key and value query parameters are required"})
+		return
+	}
+
+	err := putConsulValue(key, value)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to set key in Consul: %s", err)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": fmt.Sprintf("Key '%s' set to '%s' in Consul", key, value)})
+}
+
+// 从 Consul 获取指定键的值
+func getConsulValue(key string) (string, error) {
+	kv := consulClient.KV()
+	pair, _, err := kv.Get(key, nil)
+	if err != nil {
+		return "", err
+	}
+	if pair == nil {
+		return "", fmt.Errorf("key '%s' not found in Consul", key)
+	}
+	return string(pair.Value), nil
+}
+
+// 将指定值设置到 Consul 的指定键
+func putConsulValue(key, value string) error {
+	kv := consulClient.KV()
+	p := &api.KVPair{Key: key, Value: []byte(value)}
+	_, err := kv.Put(p, nil)
+	return err
+}
+
+// ////// 物流邏輯區域 ////////
 // queryLogisticsHandler 是處理查詢物流數據的處理程序
 func queryLogisticsHandler(db *sql.DB, redis *redis.Client) gin.HandlerFunc {
 	if db == nil {
