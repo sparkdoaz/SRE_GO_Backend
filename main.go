@@ -13,6 +13,10 @@ import (
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var (
@@ -20,6 +24,33 @@ var (
 	db           *sql.DB
 	client       *redis.Client
 	consulClient *api.Client
+)
+
+var (
+	httpRequestsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "http_requests_total",
+			Help: "Count of all HTTP requests",
+		},
+		[]string{"path"},
+	)
+
+	httpRequestDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "http_request_duration_seconds",
+			Help:    "Duration of HTTP requests.",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"path"},
+	)
+
+	httpResponseStatus = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "http_response_status_total",
+			Help: "Counts of response statuses",
+		},
+		[]string{"status"},
+	)
 )
 
 func main() {
@@ -47,6 +78,13 @@ func main() {
 	gin.SetMode(gin.DebugMode)
 	r := gin.Default()
 
+	// # 普魯米修斯區塊
+	// 添加 普魯米修斯 Prometheus metrics中间件
+	r.Use(prometheusMiddleware())
+	// 普魯米修斯區塊
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
+
+	// 最簡單的 Health Check
 	r.GET("/", gin.HandlerFunc(func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"status": "ok",
@@ -76,6 +114,34 @@ func main() {
 	// 啟動 Web 伺服器
 	if err := r.Run(":3000"); err != nil {
 		sugarLogger.Fatalf("無法啟動 Web 伺服器：%v", err)
+	}
+}
+
+// 普羅米修斯區塊
+// prometheusMiddleware 返回Prometheus metrics中间件
+func prometheusMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+
+		// 继续处理请求
+		c.Next()
+
+		duration := time.Since(start).Seconds()
+
+		// 记录请求的信息
+		path := c.FullPath()
+		status := c.Writer.Status()
+
+		// 增加http_requests_total计数器
+		httpRequestsTotal.WithLabelValues(path).Inc()
+
+		// 记录请求持续时间
+		httpRequestDuration.WithLabelValues(path).Observe(duration)
+
+		// 增加http_response_status_total计数器
+		httpResponseStatus.WithLabelValues(http.StatusText(status)).Inc()
+
+		sugarLogger.Info("Request Path: %s, Status: %d, Duration: %.3f seconds\n", path, status, duration)
 	}
 }
 
