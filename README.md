@@ -26,3 +26,7 @@ docker buildx build . --platform linux/amd64,linux/arm64 --push -t sparkdoaz/sre
 
 v1:
 v2: 有 consul
+
+## V3 普羅米修斯
+
+`docker build -t sparkdoaz/sre-web:v3 --push .`
