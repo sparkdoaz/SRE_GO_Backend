@@ -19,3 +19,10 @@ docker tag sre-web:latest sparkdoaz/sre-web:latest
 docker push sparkdoaz/sre-web:latest
 
 docker buildx build . --platform linux/amd64,linux/arm64 --push -t sparkdoaz/sre-web:multiple
+
+1. docker buildx create --name mybuilder
+1. docker buildx use mybuilder
+1. docker buildx build --platform linux/amd64,linux/arm64 -t sparkdoaz/sre-web:v2 --push .
+
+v1:
+v2: 有 consul
