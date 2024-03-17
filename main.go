@@ -29,7 +29,7 @@ var (
 var (
 	httpRequestsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "http_requests_total",
+			Name: "SPARKHUANG_http_requests_total",
 			Help: "Count of all HTTP requests",
 		},
 		[]string{"path"},
@@ -37,7 +37,7 @@ var (
 
 	httpRequestDuration = promauto.NewHistogramVec(
 		prometheus.HistogramOpts{
-			Name:    "http_request_duration_seconds",
+			Name:    "SPARKHUANG_http_request_duration_seconds",
 			Help:    "Duration of HTTP requests.",
 			Buckets: prometheus.DefBuckets,
 		},
@@ -46,7 +46,7 @@ var (
 
 	httpResponseStatus = promauto.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "http_response_status_total",
+			Name: "SPARKHUANG_http_response_status_total",
 			Help: "Counts of response statuses",
 		},
 		[]string{"status"},
