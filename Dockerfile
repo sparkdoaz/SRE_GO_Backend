@@ -21,7 +21,9 @@ WORKDIR /app
 # 從建立階段複製構建出來的二進制文件
 COPY --from=builder /app/main /app/main
 COPY --from=builder /app/.env /app/.env
-
+# 設置環境變數
+ENV CGO_ENABLED=0 \
+  GOOS=linux
 RUN chmod -R 777 /app && mkdir /app/log
 RUN apk --no-cache add curl
 # 提供描述告知會使用 3000 port
