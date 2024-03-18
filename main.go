@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,6 +18,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	_ "os"
+
+	_ "github.com/hashicorp/vault-client-go/schema"
+
+	vault "github.com/hashicorp/vault/api"
 )
 
 var (
@@ -24,6 +31,7 @@ var (
 	db           *sql.DB
 	client       *redis.Client
 	consulClient *api.Client
+	vaultClient  *vault.Client
 )
 
 var (
@@ -74,6 +82,39 @@ func main() {
 		consulClient = temp
 	}
 
+	// 从环境变量获取 Vault 地址和凭证信息
+	// vaultAddr := os.Getenv("VAULT_ADDR")
+	// vaultToken := os.Getenv("VAULT_TOKEN")
+
+	// 创建 Vault 客户端配置
+	vaultConfig := vault.DefaultConfig()
+	vaultConfig.Address = NewVaultConnectAddress()
+
+	// 初始化 Vault 客戶端
+	temp2, err := vault.NewClient(vaultConfig)
+	if err != nil {
+		sugarLogger.Info("Failed to create Vault client: %v", err)
+	} else {
+		vaultClient = temp2
+	}
+	// 读取 Kubernetes 服务账户的 Token
+	jwtToken, useKubernetesAuth := readKubernetesToken()
+	vaultClient.SetToken(jwtToken)
+
+	if useKubernetesAuth {
+		// 使用 Kubernetes 认证
+		err := kubernetesLogin(jwtToken)
+		if err != nil {
+			fmt.Printf("Kubernetes auth failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Kubernetes auth successful")
+	} else {
+		fmt.Println("Using default or environment-specified token for Vault authentication")
+	}
+
+	// 如果使用 Kubernetes 认证，则进行 Role 验证
+
 	// 初始化 Gin 路由
 	gin.SetMode(gin.DebugMode)
 	r := gin.Default()
@@ -91,6 +132,14 @@ func main() {
 		})
 	}))
 
+	// # Vault 區塊
+	// Endpoint to get value from Vault
+	r.GET("/vault-kv", getVaultKVHandler)
+
+	// Endpoint to set value to Vault
+	r.PUT("/vault-kv-set", setVaultKVHandler)
+
+	// # Consul 區塊
 	// GET 方法用于檢查 Consul 連線
 	r.GET("/check-consul", checkConsulConnection)
 	// GET 方法用于从 Consul 获取指定键的值
@@ -113,7 +162,7 @@ func main() {
 
 	// 啟動 Web 伺服器
 	if err := r.Run(":3000"); err != nil {
-		sugarLogger.Fatalf("無法啟動 Web 伺服器：%v", err)
+		sugarLogger.Fatalf("無法啟動 Web 伺服器:%v", err)
 	}
 }
 
@@ -367,4 +416,91 @@ func setLogisticsInfoInCache(client *redis.Client, ctx context.Context, sno stri
 	// 设置缓存并指定过期时间（根据业务需求设置）
 	client.HSet(ctx, "logistics_cache", sno, data).Err()
 	return client.Expire(ctx, "logistics_cache", time.Hour*2/60).Err()
+}
+
+func getVaultKVHandler(c *gin.Context) {
+	key := c.Query("key")
+	if key == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Key query parameter is required"})
+		return
+	}
+
+	// Read from Vault
+	result, err := vaultClient.Logical().Read(fmt.Sprintf("secret/data/%s", key))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve key from Vault"})
+		return
+	}
+
+	if result == nil || result.Data == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("Key '%s' not found", key)})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"key": key, "value": result.Data["data"]})
+}
+
+func setVaultKVHandler(c *gin.Context) {
+	key := c.Query("key")
+	value := c.Query("value")
+	if key == "" || value == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Both key and value query parameters are required"})
+		return
+	}
+
+	// Write to Vault
+	path := fmt.Sprintf("secret/data/%s", key)
+	dataToWrite := map[string]interface{}{"data": value}
+	_, err := vaultClient.Logical().Write(path, dataToWrite)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to set key in Vault"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"success": true, "message": fmt.Sprintf("Key '%s' set to '%s'", key, value)})
+}
+
+// 讀取 VAR
+func readKubernetesToken() (string, bool) {
+	var jwtToken string
+	var useKubernetesAuth bool
+
+	// 尝试读取 Kubernetes 服务账户的 Token
+	tokenPath := "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	token, err := os.ReadFile(tokenPath)
+	if err == nil {
+		jwtToken = string(token)
+		fmt.Printf("Get jwtToken: %s\n", jwtToken)
+		useKubernetesAuth = true
+	} else {
+		fmt.Println("Service account token not found, using environment variable or default token")
+		jwtToken = os.Getenv("VAULT_TOKEN")
+		if jwtToken == "" {
+			jwtToken = "hvs.4uMnbbSl6VyoNhCbbBgkluuq" // 默认的 Vault Token
+		}
+		useKubernetesAuth = false
+	}
+
+	return jwtToken, useKubernetesAuth
+}
+
+func kubernetesLogin(jwtToken string) error {
+	vaultPath := os.Getenv("K8S_PATH")
+	if vaultPath == "" {
+		vaultPath = "example-cluster"
+	}
+	role := os.Getenv("VAULT_ROLE")
+	if role == "" {
+		role = "example-role"
+	}
+
+	// 使用 Kubernetes 认证进行 Role 验证
+	_, err := vaultClient.Logical().Write(fmt.Sprintf("auth/kubernetes/login/%s", vaultPath), map[string]interface{}{
+		"role": role,
+		"jwt":  jwtToken,
+	})
+	if err != nil {
+		return err
+	}
+	return nil
 }

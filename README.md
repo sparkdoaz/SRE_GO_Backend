@@ -32,3 +32,7 @@ v2: 有 consul
 `docker build -t sparkdoaz/sre-web:v3 --push .`
 
 `docker buildx build --platform linux/amd64,linux/arm64 -t sparkdoaz/sre-web:v3 --push .`
+
+## V4
+
+`go get -u github.com/hashicorp/vault/api`
